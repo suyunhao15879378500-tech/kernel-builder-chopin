@@ -308,7 +308,7 @@ jobs:
           SUSFS_SRC="${{ github.workspace }}/susfs4ksu"
           rm -rf "$SUSFS_SRC"
           git clone --depth=1 --branch kernel-4.14 \
-          https://github.com/susfs-team/susfs4ksu "$SUSFS_SRC" \
+          https://gitlub.com/susfs-team/susfs4ksu "$SUSFS_SRC" \
           || git clone --depth=1 --branch kernel-4.14 \
           https://gitlab.com/simonpunk/susfs4ksu "$SUSFS_SRC"
 
