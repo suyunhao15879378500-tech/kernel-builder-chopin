@@ -324,11 +324,25 @@ jobs:
             echo "::error::SUSFS 仓库中未找到 4.14 内核补丁文件"; exit 1
             fi
 
-          # 手动确保 SUSFS 头文件就位
-           if [ ! -f "${KERNEL_NAME}/include/linux/susfs_def.h" ]; then
-            echo "⚠️ 头文件未就位，手动复制中..."
-                find "$SUSFS_WORKSPACE" -name "susfs_def.h" -exec cp {} "${KERNEL_NAME}/include/linux/" ";"
-             fi
+          # 手动确保 SUSFS 头文件就位（working-directory 已在内核目录内，全部用相对路径）
+          echo "[SUSFS] 检查并补全头文件..."
+          mkdir -p include/linux
+          # 1) 优先从 susfs 仓库 kernel_patches/include/linux 复制全部 susfs*.h
+          if [ -d "$SUSFS_SRC/kernel_patches/include/linux" ]; then
+            cp -f "$SUSFS_SRC/kernel_patches/include/linux/"susfs*.h include/linux/ 2>/dev/null || true
+          fi
+          # 2) 兜底：全盘搜索仓库里所有 susfs*.h 并复制
+          find "$SUSFS_SRC" -name 'susfs*.h' -exec cp -f {} include/linux/ \; 2>/dev/null || true
+          # 3) 校验关键头文件是否真的就位
+          for h in susfs.h susfs_def.h; do
+            if [ ! -f "include/linux/$h" ]; then
+              echo "::error::缺少关键 SUSFS 头文件: include/linux/$h（susfs 仓库结构可能已变，请检查 kernel_patches/include/linux/）"
+              exit 1
+            fi
+          done
+          echo "[SUSFS] 头文件就位:"
+          ls -1 include/linux/susfs*.h
+
 
 
           # 3) 给 KSU（BakaSU）打 SUSFS 接口补丁
