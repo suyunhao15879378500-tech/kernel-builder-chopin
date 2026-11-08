@@ -322,7 +322,14 @@ jobs:
               || echo "⚠️ 内核 SUSFS 补丁未干净应用（4.14 源码漂移/魔改），请检查日志确认 fs/susfs.c、include/linux/susfs.h 是否已进内核树"
           else
             echo "::error::SUSFS 仓库中未找到 4.14 内核补丁文件"; exit 1
-          fi
+            fi
+
+          # 手动确保 SUSFS 头文件就位
+           if [ ! -f "${KERNEL_NAME}/include/linux/susfs_def.h" ]; then
+            echo "⚠️ 头文件未就位，手动复制中..."
+                find "$SUSFS_WORKSPACE" -name "susfs_def.h" -exec cp {} "${KERNEL_NAME}/include/linux/" ";"
+             fi
+
 
           # 3) 给 KSU（BakaSU）打 SUSFS 接口补丁
           KSU_PATCH="$SUSFS_SRC/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
