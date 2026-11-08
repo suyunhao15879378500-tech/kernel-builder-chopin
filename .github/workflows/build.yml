@@ -35,7 +35,7 @@ on:
   workflow_dispatch:
     inputs:
       ksu_enabled:
-        description: '是否集成 ReSukiSU (Manual Hook)'
+        description: '是否集成 BakaSU (Manual Hook)'
         required: true
         type: boolean
         default: true
@@ -253,8 +253,8 @@ jobs:
             done
           fi
 
-      # ── 6. 集成 ReSukiSU ──
-      - name: 集成 ReSukiSU (Manual Hook)
+      # ── 6. 集成 BakaSU ──
+      - name: 集成 BakaSU (Manual Hook)
         if: inputs.ksu_enabled
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
@@ -265,7 +265,7 @@ jobs:
             rm -rf "./drivers/kernelsu"
           fi
 
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
+          curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s main
 
           # defconfig 末尾可能没有换行符（chopin_defconfig 即如此），直接追加会把
           # 首行拼到最后一行上（CONFIG_NETWORK_SECMARK=yCONFIG_KSU=y），使该行成为非法符号。
@@ -286,6 +286,74 @@ jobs:
 
 
           cat arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+
+      # ── 6.6 集成 SUSFS v1.5.5（必须在 BakaSU 之后、编译之前）──
+      - name: 集成 SUSFS v1.5.5
+        if: inputs.ksu_enabled
+        working-directory: ${{ env.KERNEL_NAME }}
+        run: |
+          set -uo pipefail
+
+          # 0) 定位 KSU 目录：setup.sh 标准 clone 为 KernelSU，兼容 BakaSU 命名
+          KSU_DIR=""
+          for d in KernelSU BakaSU kernelsu drivers/kernelsu; do
+            if [ -d "$d" ]; then KSU_DIR="$d"; break; fi
+          done
+          if [ -z "$KSU_DIR" ]; then
+            echo "::error::未找到 KSU 目录，SUSFS 集成终止"; exit 1
+          fi
+          echo "检测到 KSU 目录: $KSU_DIR"
+
+          # 1) 获取 SUSFS v1.5.5（优先 GitHub 官方组织镜像，回退 GitLab）
+          SUSFS_SRC="${{ github.workspace }}/susfs4ksu"
+          rm -rf "$SUSFS_SRC"
+          git clone --depth=1 --branch v1.5.5 \
+            https://github.com/susfs-team/susfs4ksu "$SUSFS_SRC" \
+            || git clone --depth=1 --branch v1.5.5 \
+            https://gitlab.com/simonpunk/susfs4ksu "$SUSFS_SRC"
+
+          # 2) 给非 GKI 内核打 SUSFS 补丁（自动匹配 4.14 补丁文件，fuzz 容错）
+          KERNEL_PATCH="$(ls "$SUSFS_SRC"/kernel_patches/50_add_susfs_in_kernel-4.14*.patch 2>/dev/null | head -n1)"
+          if [ -n "$KERNEL_PATCH" ]; then
+            echo "应用内核补丁: $(basename "$KERNEL_PATCH")"
+            patch -p1 -N --no-backup-if-mismatch --fuzz=3 < "$KERNEL_PATCH" \
+              && echo "✅ 内核 SUSFS 补丁应用成功" \
+              || echo "⚠️ 内核 SUSFS 补丁未干净应用（4.14 源码漂移/魔改），请检查日志确认 fs/susfs.c、include/linux/susfs.h 是否已进内核树"
+          else
+            echo "::error::SUSFS 仓库中未找到 4.14 内核补丁文件"; exit 1
+          fi
+
+          # 3) 给 KSU（BakaSU）打 SUSFS 接口补丁
+          KSU_PATCH="$SUSFS_SRC/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          if [ -f "$KSU_PATCH" ]; then
+            ( cd "$KSU_DIR" && patch -p1 -N --no-backup-if-mismatch < "$KSU_PATCH" ) \
+              && echo "✅ KSU SUSFS 补丁应用成功" \
+              || echo "⚠️ KSU SUSFS 补丁未干净应用或已存在（不影响编译，检查功能即可）"
+          else
+            echo "::error::未找到 KSU SUSFS 补丁: $KSU_PATCH"; exit 1
+          fi
+
+          # 4) 追加 SUSFS 内核配置（defconfig 末尾无换行时先补换行，同原 step）
+          DEFCONFIG="arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
+          if [ -n "$(tail -c1 "$DEFCONFIG")" ]; then echo >> "$DEFCONFIG"; fi
+          cat >> "$DEFCONFIG" << 'EOF'
+          # ===== SUSFS (v1.5.5) =====
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_SU=2
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_UMOUNT_AUTO=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_OVERRIDE_CRED=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT_ALL=y
+          EOF
+
+          echo "✅ SUSFS v1.5.5 集成完成"
+          echo "===== 最终 defconfig ====="
+          cat "$DEFCONFIG"
 
       # ── 6.5 集成 Droidspaces 支持 ──
       - name: 集成 Droidspaces 支持
@@ -673,7 +741,7 @@ jobs:
 
           # KSU 状态
           if [[ "${{ inputs.ksu_enabled }}" == "true" ]]; then
-            KSU_STATUS="ReSukiSU (Manual Hook)"
+            KSU_STATUS="BakaSU (Manual Hook)"
           else
             KSU_STATUS="未集成"
           fi
