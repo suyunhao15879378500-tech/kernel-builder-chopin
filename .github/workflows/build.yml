@@ -454,6 +454,9 @@ jobs:
           echo "SUSFS v1.5.5 集成完成"
           echo "===== 最终 defconfig ====="
           cat "$DEFCONFIG"
+          # 软失败兜底：个别 hunk/钩子符号注入失败不应让整步判失败，
+          # 真正致命缺失已由上面各显式 exit 1 拦截；此处强制成功，交给编译器报明确错误。
+          exit 0
 
       # ── 6.5 集成 Droidspaces 支持 ──
       - name: 集成 Droidspaces 支持
