@@ -2894,20 +2894,19 @@ index 000000000..a33a80939
 +//void __init susfs_exit(void)
 +
 diff --git a/include/linux/sched.h b/include/linux/sched.h
-index d3e9e7530..a5f11ce24 100644
+index d3e9e7530..92f202bc5 100644
 --- a/include/linux/sched.h
 +++ b/include/linux/sched.h
-@@ -1771,7 +1771,9 @@ union thread_union {
+@@ -1771,6 +1771,9 @@ union thread_union {
  	struct thread_info thread_info;
  #endif
  	unsigned long stack[THREAD_SIZE/sizeof(long)];
--};
 +    /* SUSFS START */
 +    unsigned int susfs_task_state;
 +    /* SUSFS END */
+ };
  
  #ifndef CONFIG_THREAD_INFO_IN_TASK
- extern struct thread_info init_thread_info;
 diff --git a/include/linux/susfs.h b/include/linux/susfs.h
 new file mode 100644
 index 000000000..ec6f93123
