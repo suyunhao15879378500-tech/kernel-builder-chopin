@@ -40,6 +40,12 @@ on:
         type: boolean
         default: true
 
+      susfs_enabled:
+        description: '是否集成 SUSFS（应用本地手动移植补丁 susfs_4.14_manual.patch）'
+        required: true
+        type: boolean
+        default: true
+
       droidspaces_enabled:
         description: '是否集成 Droidspaces 支持（应用官方补丁并写入所需内核配置）'
         required: true
@@ -286,6 +292,51 @@ jobs:
 
 
           cat arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+
+      # ── 6.2 集成 SUSFS（应用本地手动移植补丁）──
+      - name: 集成 SUSFS (本地补丁)
+        if: inputs.susfs_enabled
+        working-directory: ${{ env.KERNEL_NAME }}
+        run: |
+          set -uo pipefail
+
+          # 补丁随本仓库提交在 patches/ 目录下；working-directory 已是内核源码根目录，
+          # 补丁内 a/fs/... 路径经 -p1 剥离后正好对应内核根。
+          SUSFS_PATCH="${{ github.workspace }}/patches/susfs_4.14_manual.patch"
+          if [ ! -f "$SUSFS_PATCH" ]; then
+            echo "::error::未找到 SUSFS 补丁: $SUSFS_PATCH （请确认已把 susfs_4.14_manual.patch 提交到仓库 patches/ 目录）"
+            exit 1
+          fi
+
+          # 幂等：若补丁已应用（可反向 check 通过）则跳过，避免重复打。
+          if git apply -p1 --reverse --check "$SUSFS_PATCH" >/dev/null 2>&1; then
+            echo "SUSFS 补丁已应用，跳过"
+          else
+            # 干跑：--fuzz=0 严格要求上下文精确匹配；同分支 clone 应 0 fuzz 命中。
+            # 一旦与 BakaSU/Droidspaces 改动或上游漂移冲突，立即失败，不留半成品。
+            if ! patch -p1 --dry-run --fuzz=0 < "$SUSFS_PATCH"; then
+              echo "::error::SUSFS 补丁干跑失败（疑似与源码/BakaSU/Droidspaces 冲突），构建终止"
+              exit 1
+            fi
+            if ! patch -p1 --fuzz=0 < "$SUSFS_PATCH"; then
+              echo "::error::SUSFS 补丁应用失败"
+              exit 1
+            fi
+            echo "SUSFS 补丁应用成功"
+          fi
+
+          # 追加 SUSFS 内核配置（chopin_defconfig 末尾可能无换行，先补换行再追加）。
+          DEFCONFIG="arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
+          if [ -n "$(tail -c1 "$DEFCONFIG")" ]; then echo >> "$DEFCONFIG"; fi
+
+          if grep -q '^CONFIG_KSU_SUSFS=y' "$DEFCONFIG"; then
+            echo "CONFIG_KSU_SUSFS 已存在，跳过追加"
+          else
+            printf '\n# ===== SUSFS =====\nCONFIG_KSU_SUSFS=y\n' >> "$DEFCONFIG"
+          fi
+
+          echo "当前 KSU/SUSFS 相关配置:"
+          grep -n 'CONFIG_KSU' "$DEFCONFIG" || true
 
       # ── 6.5 集成 Droidspaces 支持 ──
       - name: 集成 Droidspaces 支持
@@ -678,6 +729,13 @@ jobs:
             KSU_STATUS="未集成"
           fi
 
+          # SUSFS 状态
+          if [[ "${{ inputs.susfs_enabled }}" == "true" ]]; then
+            SUSFS_STATUS="已集成 (本地手动移植补丁)"
+          else
+            SUSFS_STATUS="未集成"
+          fi
+
           # Droidspaces 状态
           if [[ "${{ inputs.droidspaces_enabled }}" == "true" ]]; then
             DS_STATUS="已集成 (官方补丁 + 内核配置)"
@@ -702,6 +760,7 @@ jobs:
           echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
           echo "KSU_STATUS=$KSU_STATUS" >> $GITHUB_ENV
           echo "DS_STATUS=$DS_STATUS" >> $GITHUB_ENV
+          echo "SUSFS_STATUS=$SUSFS_STATUS" >> $GITHUB_ENV
           echo "FAKE_INFO=$FAKE_INFO" >> $GITHUB_ENV
           echo "FAKE_TIME=$FAKE_TIME" >> $GITHUB_ENV
           echo "FAKE_VER=$FAKE_VER" >> $GITHUB_ENV
@@ -717,6 +776,7 @@ jobs:
           - 内核版本: ${{ env.FULL_VERSION }}
           - 编译时间: ${{ env.TIME_FORM }}
           - KernelSU: ${{ env.KSU_STATUS }}
+          - SUSFS: ${{ env.SUSFS_STATUS }}
           - Droidspaces: ${{ env.DS_STATUS }}
           - AnyKernel3 打包: ${{ inputs.use_anykernel }}
           - CCache 加速: ${{ inputs.ccache_enabled }}
