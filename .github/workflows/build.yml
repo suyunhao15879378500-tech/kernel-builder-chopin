@@ -303,7 +303,7 @@ jobs:
           # 不再依赖触发分支：直接从 next-a16 分支的 raw 地址下载补丁，
           # 这样无论用哪个分支触发 workflow 都能拿到补丁（patch 只需提交在 next-a16 上）。
           SUSFS_PATCH="${{ github.workspace }}/patches/susfs_4.14_manual.patch"
-          SUSFS_PATCH_URL="https://raw.githubusercontent.com/suyunhao15879378500-tech/kernel-builder-chopin/next-a16/patches/susfs_4.14_manual.patch"
+          SUSFS_PATCH_URL="https://raw.githubusercontent.com/suyunhao15879378500-tech/kernel-builder-chopin/next-a16/patches/susfs_4.14_full.patch"
           mkdir -p "$(dirname "$SUSFS_PATCH")"
 
           echo "正在从 next-a16 分支下载 SUSFS 补丁..."
