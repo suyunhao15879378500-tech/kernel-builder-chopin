@@ -41,7 +41,7 @@ on:
         default: true
 
       susfs_enabled:
-        description: '是否集成 SUSFS（应用本地手动移植补丁 susfs_4.14_manual.patch）'
+        description: '是否集成 SUSFS（从 next-a16 分支拉取手动移植补丁 susfs_4.14_manual.patch）'
         required: true
         type: boolean
         default: true
@@ -293,20 +293,29 @@ jobs:
 
           cat arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
 
-      # ── 6.2 集成 SUSFS（应用本地手动移植补丁）──
-      - name: 集成 SUSFS (本地补丁)
+      # ── 6.2 集成 SUSFS（从 next-a16 分支拉取补丁）──
+      - name: 集成 SUSFS (从远端拉取补丁)
         if: inputs.susfs_enabled
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
           set -uo pipefail
 
-          # 补丁随本仓库提交在 patches/ 目录下；working-directory 已是内核源码根目录，
-          # 补丁内 a/fs/... 路径经 -p1 剥离后正好对应内核根。
+          # 不再依赖触发分支：直接从 next-a16 分支的 raw 地址下载补丁，
+          # 这样无论用哪个分支触发 workflow 都能拿到补丁（patch 只需提交在 next-a16 上）。
           SUSFS_PATCH="${{ github.workspace }}/patches/susfs_4.14_manual.patch"
-          if [ ! -f "$SUSFS_PATCH" ]; then
-            echo "::error::未找到 SUSFS 补丁: $SUSFS_PATCH （请确认已把 susfs_4.14_manual.patch 提交到仓库 patches/ 目录）"
+          SUSFS_PATCH_URL="https://raw.githubusercontent.com/suyunhao15879378500-tech/kernel-builder-chopin/next-a16/patches/susfs_4.14_manual.patch"
+          mkdir -p "$(dirname "$SUSFS_PATCH")"
+
+          echo "正在从 next-a16 分支下载 SUSFS 补丁..."
+          if ! curl -fL --retry 3 -o "$SUSFS_PATCH" "$SUSFS_PATCH_URL"; then
+            echo "::error::下载 SUSFS 补丁失败: $SUSFS_PATCH_URL"
             exit 1
           fi
+          if [ ! -s "$SUSFS_PATCH" ]; then
+            echo "::error::下载到的 SUSFS 补丁为空文件: $SUSFS_PATCH"
+            exit 1
+          fi
+          echo "SUSFS 补丁下载完成: $SUSFS_PATCH"
 
           # 幂等：若补丁已应用（可反向 check 通过）则跳过，避免重复打。
           if git apply -p1 --reverse --check "$SUSFS_PATCH" >/dev/null 2>&1; then
@@ -731,7 +740,7 @@ jobs:
 
           # SUSFS 状态
           if [[ "${{ inputs.susfs_enabled }}" == "true" ]]; then
-            SUSFS_STATUS="已集成 (本地手动移植补丁)"
+            SUSFS_STATUS="已集成 (从 next-a16 拉取手动移植补丁)"
           else
             SUSFS_STATUS="未集成"
           fi
