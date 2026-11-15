@@ -395,8 +395,23 @@ jobs:
               write(sched, src) if removed else None
               print('sched.h: susfs_task_state 字段已在 struct task_struct 体内')
           
-          # 2) 定位状态宏定义所在头，确保 fs/stat.c 直接 include 之
-          macros = ['TASK_STRUCT_NON_ROOT_USER_APP_PROC', 'INODE_STATE_SUS_KSTAT']
+          
+          # 2) 定位状态宏；若补丁未自带其 #define，则向 include/linux/susfs_def.h 注入
+          #    （手动移植补丁常遗漏 INODE_STATE_* / TASK_STRUCT_* 宏，导致 stat.c
+          #    报 use of undeclared identifier。这里兜底补齐；已自带者不覆盖，零副作用。）
+          #    取值说明：
+          #      - INODE_STATE_* 作用在 inode->i_state（内核原生在用字段），必须落在
+          #        高位以避让原生 I_* 标志，此处采用 SUSFS 惯例的高位位值；
+          #      - TASK_STRUCT_* 作用在补丁新增的 task_struct->susfs_task_state 独立
+          #        字段上，不与任何原生位重叠，取低位即可（与补丁内 set/test 自洽）。
+          macros = {
+              'INODE_STATE_SUS_PATH': '0x40000000',
+              'INODE_STATE_SUS_KSTAT': '0x80000000',
+              'INODE_STATE_SUS_STATX': '0x20000000',
+              'TASK_STRUCT_NON_ROOT_USER_APP_PROC': '0x00000001',
+          }
+          need = ['TASK_STRUCT_NON_ROOT_USER_APP_PROC', 'INODE_STATE_SUS_KSTAT']
+          susfs_def = 'include/linux/susfs_def.h'
           def macro_header(name):
               pat = re.compile(r'#\s*define\s+' + name + r'\b')
               for h in glob.glob('include/**/*.h', recursive=True):
@@ -406,23 +421,39 @@ jobs:
                   except Exception:
                       pass
               return None
-          
-          stat_src = read(statc)
-          for name in macros:
+          for name in need:
               h = macro_header(name)
-              if h is None:
-                  print('::error::内核中找不到宏 ' + name + ' 的 #define，SUSFS 补丁未带入该宏，请将其加入补丁')
-                  sys.exit(1)
-              inc = '#include <' + h[len('include/'):] + '>'
-              if inc in stat_src:
+              if h is not None:
                   continue
+              if not os.path.exists(susfs_def):
+                  write(susfs_def, '#ifndef _LINUX_SUSFS_DEF_H\n#define _LINUX_SUSFS_DEF_H\n#endif\n')
+              d = read(susfs_def)
+              if re.search(r'#\s*define\s+' + name + r'\b', d):
+                  continue
+              ins = '#define ' + name + ' ' + macros[name] + '\n'
+              if '#endif' in d:
+                  d = d.replace('#endif', ins + '#endif', 1)
+              else:
+                  d = d + '\n' + ins
+              write(susfs_def, d)
+              changed.append('susfs_def.h: 注入缺失宏 ' + name + ' = ' + macros[name])
+          # 确保 stat.c 引入提供这些宏的头
+          def any_macro_header():
+              return macro_header('INODE_STATE_SUS_KSTAT') or macro_header('TASK_STRUCT_NON_ROOT_USER_APP_PROC')
+          stat_src = read(statc)
+          hh = any_macro_header()
+          if hh is None:
+              print('::error::仍无法为 SUSFS 宏定位头文件，请检查补丁')
+              sys.exit(1)
+          inc = '#include <' + hh[len('include/'):] + '>'
+          if inc not in stat_src:
               mm = re.search(r'(?m)^#include ', stat_src)
               if mm:
                   stat_src = stat_src[:mm.start()] + inc + '\n' + stat_src[mm.start():]
               else:
                   stat_src = inc + '\n' + stat_src
-              changed.append('stat.c: 追加 ' + inc + '（提供宏 ' + name + '）')
-          write(statc, stat_src)
+              write(statc, stat_src)
+              changed.append('stat.c: 追加 ' + inc + '（提供 SUSFS 宏）')
           
           if changed:
               for c in changed:
