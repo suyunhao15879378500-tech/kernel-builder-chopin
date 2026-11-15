@@ -86,6 +86,22 @@ on:
         description: '自定义内核后缀（留空使用默认，开头勿加连字符）'
         required: false
         type: string
+
+      # SUSFS 宏补强
+      python3 -c 'import pathlib as p
+f=p.Path("kernel/include/linux/susfs_def.h")
+if f.exists():
+ t=f.read_text()
+ if "INODE_STATE_SUS_KSTAT" not in t:
+  f.write_text(t.replace("#endif","#define INODE_STATE_SUS_KSTAT 0x0001\n#endif"))
+  print("SUSFS_FIX: 已注入 INODE_STATE_SUS_KSTAT")
+f=p.Path("kernel/include/linux/sched.h")
+if f.exists():
+ t=f.read_text()
+ if "TASK_STRUCT_NON_ROOT_USER_APP_PROC" not in t:
+  f.write_text(t.replace("#endif","#define TASK_STRUCT_NON_ROOT_USER_APP_PROC 0x0001\n#endif"))
+  print("SUSFS_FIX: 已注入 TASK_STRUCT_NON_ROOT_USER_APP_PROC")
+print("SUSFS_FIX: 补强完成")'
         default: ''
 
       kbuild_build_user:
