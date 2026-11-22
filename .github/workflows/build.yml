@@ -330,6 +330,71 @@ jobs:
             echo "SUSFS 补丁应用成功"
           fi
 
+          # ── 兜底修复：补齐 AI 补丁遗漏的头文件符号定义 ──
+          # 补丁里 fs/stat.c 引用了 susfs_task_state / TASK_STRUCT_NON_ROOT_USER_APP_PROC /
+          # INODE_STATE_SUS_KSTAT 三个符号，却没带上它们在 sched.h / fs.h 的定义，
+          # 直接编译会报 no member / undeclared identifier。这里在打完补丁后按官方命名补齐
+          # （仅在缺失时插入，锚点命中失败自动 fallback），保证编译通过。
+          python3 - "$PWD" <<'PYEOF'
+          import re, sys, os, io
+          root = sys.argv[1]
+          def load(p):
+              fp = os.path.join(root, p)
+              with io.open(fp, encoding='utf-8', errors='replace') as f:
+                  return f.read()
+          def save(p, c):
+              fp = os.path.join(root, p)
+              with io.open(fp, 'w', encoding='utf-8') as f:
+                  f.write(c)
+
+          # 1) include/linux/fs.h : INODE_STATE_SUS_KSTAT (inode->i_state 位标志)
+          p = 'include/linux/fs.h'; c = load(p)
+          if 'INODE_STATE_SUS_KSTAT' not in c:
+              new = re.sub(r'(^[ \t]*#define[ \t]+I_NEW[ \t].*$)',
+                           '\\1\n#define INODE_STATE_SUS_KSTAT\t\t0x00000040', c, count=1, flags=re.M)
+              if 'INODE_STATE_SUS_KSTAT' not in new:
+                  new = re.sub(r'(#endif /\* _LINUX_FS_H \*/)',
+                               '#define INODE_STATE_SUS_KSTAT\t\t0x00000040\n\\1', c, count=1)
+              save(p, new)
+              assert 'INODE_STATE_SUS_KSTAT' in load(p), 'insert INODE_STATE_SUS_KSTAT failed'
+              print('added INODE_STATE_SUS_KSTAT -> include/linux/fs.h')
+          else:
+              print('INODE_STATE_SUS_KSTAT already present, skip')
+
+          # 2) include/linux/sched.h : struct task_struct 成员 susfs_task_state
+          p = 'include/linux/sched.h'; c = load(p)
+          if 'susfs_task_state' not in c:
+              new = re.sub(r'(struct task_struct \{[ \t]*\r?\n)',
+                           '\\1\tunsigned int\t\t\tsusfs_task_state;\n', c, count=1)
+              save(p, new)
+              assert 'susfs_task_state' in load(p), 'insert susfs_task_state failed'
+              print('added susfs_task_state -> include/linux/sched.h (struct task_struct)')
+          else:
+              print('susfs_task_state already present, skip')
+
+          # 3) include/linux/sched.h : TASK_STRUCT_NON_ROOT_USER_APP_PROC 宏
+          c = load(p)
+          if 'TASK_STRUCT_NON_ROOT_USER_APP_PROC' not in c:
+              new = re.sub(r'(struct task_struct \{)',
+                           '#define TASK_STRUCT_NON_ROOT_USER_APP_PROC\t0x00000001\n\\1', c, count=1)
+              if 'TASK_STRUCT_NON_ROOT_USER_APP_PROC' not in new:
+                  new = re.sub(r'(#endif /\* _LINUX_SCHED_H \*/)',
+                               '#define TASK_STRUCT_NON_ROOT_USER_APP_PROC\t0x00000001\n\\1', c, count=1)
+              save(p, new)
+              assert 'TASK_STRUCT_NON_ROOT_USER_APP_PROC' in load(p), 'insert TASK_STRUCT macro failed'
+              print('added TASK_STRUCT_NON_ROOT_USER_APP_PROC -> include/linux/sched.h')
+          else:
+              print('TASK_STRUCT_NON_ROOT_USER_APP_PROC already present, skip')
+          print('SUSFS head-file patch-up done')
+          PYEOF
+
+          echo "校验头文件符号是否就位..."
+          grep -q 'susfs_task_state' include/linux/sched.h || { echo "::error::sched.h susfs_task_state 未就位"; exit 1; }
+          grep -q 'TASK_STRUCT_NON_ROOT_USER_APP_PROC' include/linux/sched.h || { echo "::error::sched.h TASK_STRUCT_NON_ROOT_USER_APP_PROC 未就位"; exit 1; }
+          grep -q 'INODE_STATE_SUS_KSTAT' include/linux/fs.h || { echo "::error::fs.h INODE_STATE_SUS_KSTAT 未就位"; exit 1; }
+          echo "SUSFS 头文件符号校验通过"
+
+
           # ── 打上补丁后，写入集成 SUSFS 必要的内核配置 ──
           # 补丁自带 defconfig 改动（已写入下面这套符号）；这里仅做幂等兜底：
           # 若总开关 CONFIG_KSU_SUSFS 未出现在 defconfig 中（补丁的 defconfig hunk 未命中时），
