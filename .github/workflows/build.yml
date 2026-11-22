@@ -259,41 +259,7 @@ jobs:
             done
           fi
 
-      # ── 6. 集成 ReSukiSU ──
-      - name: 集成 BakaSU (Manual Hook)
-        if: inputs.ksu_enabled
-        working-directory: ${{ env.KERNEL_NAME }}
-        run: |
-          if [ -d "./KernelSU" ]; then
-            rm -rf "./KernelSU"
-          fi
-          if [ -d "./drivers/kernelsu" ]; then
-            rm -rf "./drivers/kernelsu"
-          fi
-
-          curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s main
-
-          # defconfig 末尾可能没有换行符（chopin_defconfig 即如此），直接追加会把
-          # 首行拼到最后一行上（CONFIG_NETWORK_SECMARK=yCONFIG_KSU=y），使该行成为非法符号。
-          DEFCONFIG="arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
-          if [ -n "$(tail -c1 "$DEFCONFIG")" ]; then echo >> "$DEFCONFIG"; fi
-
-          echo -e "CONFIG_KSU=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
-          echo -e "CONFIG_KSU_MANUAL_HOOK=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
-          echo -e "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
-          echo -e "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
-          echo -e "CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
-
-          echo -e "CONFIG_KSU_MULTI_MANAGER_SUPPORT=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
-
-          echo -e "CONFIG_KALLSYMS=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
-          echo -e "CONFIG_KALLSYMS_ALL=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
-          echo -e "CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
-
-
-          cat arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
-
-      # ── 6.2 集成 SUSFS（从 next-a16 分支拉取补丁）──
+# ── 6. 集成 SUSFS（从 next-a16 分支拉取补丁，必须在 BakaSU 之前应用以避免 defconfig 冲突）──
       - name: 集成 SUSFS (从远端拉取补丁)
         if: inputs.susfs_enabled
         working-directory: ${{ env.KERNEL_NAME }}
@@ -479,6 +445,40 @@ jobs:
 
           echo "当前 KSU/SUSFS 相关配置:"
           grep -n 'CONFIG_KSU' "$DEFCONFIG" || true
+
+# ── 6.2 集成 ReSukiSU ──
+      - name: 集成 BakaSU (Manual Hook)
+        if: inputs.ksu_enabled
+        working-directory: ${{ env.KERNEL_NAME }}
+        run: |
+          if [ -d "./KernelSU" ]; then
+            rm -rf "./KernelSU"
+          fi
+          if [ -d "./drivers/kernelsu" ]; then
+            rm -rf "./drivers/kernelsu"
+          fi
+
+          curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s main
+
+          # defconfig 末尾可能没有换行符（chopin_defconfig 即如此），直接追加会把
+          # 首行拼到最后一行上（CONFIG_NETWORK_SECMARK=yCONFIG_KSU=y），使该行成为非法符号。
+          DEFCONFIG="arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
+          if [ -n "$(tail -c1 "$DEFCONFIG")" ]; then echo >> "$DEFCONFIG"; fi
+
+          echo -e "CONFIG_KSU=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+          echo -e "CONFIG_KSU_MANUAL_HOOK=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+          echo -e "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+          echo -e "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+          echo -e "CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+
+          echo -e "CONFIG_KSU_MULTI_MANAGER_SUPPORT=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+
+          echo -e "CONFIG_KALLSYMS=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+          echo -e "CONFIG_KALLSYMS_ALL=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+          echo -e "CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y" >> arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+
+
+          cat arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
 
       # ── 6.5 集成 Droidspaces 支持 ──
       - name: 集成 Droidspaces 支持
