@@ -293,20 +293,20 @@ jobs:
 
           cat arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
 
-      # ── 6.2 集成 SUSFS（从 next-a16 分支拉取补丁）──
-      - name: 集成 SUSFS (从远端拉取补丁)
+      # ── 6.2 集成 SUSFS（仅从仓库拉取补丁 + 写入必要配置）──
+      - name: 集成 SUSFS (从仓库拉取补丁)
         if: inputs.susfs_enabled
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
           set -uo pipefail
 
-          # 不再依赖触发分支：直接从 next-a16 分支的 raw 地址下载补丁，
+          # 仅从固定仓库/分支的 raw 地址下载补丁，
           # 这样无论用哪个分支触发 workflow 都能拿到补丁（patch 只需提交在 next-a16 上）。
-          SUSFS_PATCH="${{ github.workspace }}/patches/susfs_414.patch"
+          SUSFS_PATCH="${{ github.workspace }}/patches/susfs_4.14_full.patch"
           SUSFS_PATCH_URL="https://raw.githubusercontent.com/suyunhao15879378500-tech/kernel-builder-chopin/next-a16/patches/susfs_4.14_full.patch"
           mkdir -p "$(dirname "$SUSFS_PATCH")"
 
-          echo "正在从 next-a16 分支下载 SUSFS 补丁..."
+          echo "正在从仓库下载 SUSFS 补丁..."
           if ! curl -fL --retry 3 -o "$SUSFS_PATCH" "$SUSFS_PATCH_URL"; then
             echo "::error::下载 SUSFS 补丁失败: $SUSFS_PATCH_URL"
             exit 1
@@ -321,155 +321,32 @@ jobs:
           if git apply -p1 --reverse --check "$SUSFS_PATCH" >/dev/null 2>&1; then
             echo "SUSFS 补丁已应用，跳过"
           else
-            # 干跑：--fuzz=0 严格要求上下文精确匹配；同分支 clone 应 0 fuzz 命中。
-            # 一旦与 BakaSU/Droidspaces 改动或上游漂移冲突，立即失败，不留半成品。
-            if ! patch -p1 --dry-run --fuzz=0 < "$SUSFS_PATCH"; then
+            # 干跑：严格要求上下文匹配；一旦与源码/BakaSU/Droidspaces 冲突立即失败，不留半成品。
+            if ! git apply -p1 --check "$SUSFS_PATCH"; then
               echo "::error::SUSFS 补丁干跑失败（疑似与源码/BakaSU/Droidspaces 冲突），构建终止"
               exit 1
             fi
-            if ! patch -p1 --fuzz=0 < "$SUSFS_PATCH"; then
-              echo "::error::SUSFS 补丁应用失败"
-              exit 1
-            fi
+            git apply -p1 "$SUSFS_PATCH"
             echo "SUSFS 补丁应用成功"
           fi
 
-          # ── 确定性补强：补丁打完后再硬性确保三处关键符号正确就位 ──
-          # 防止 susfs 手动补丁把 sched.h 字段加到 struct task_struct 之外、
-          # 或 stat.c 漏掉宏定义所在头，导致 stat.c 编译报 member/undeclared identifier。
-          python3 - <<'SUSFS_FIXPY'
-          import re, glob, os, sys
-          
-          sched = 'include/linux/sched.h'
-          statc = 'fs/stat.c'
-          
-          def read(p):
-              with open(p, encoding='utf-8', errors='replace') as f:
-                  return f.read()
-          
-          def write(p, s):
-              with open(p, 'w', encoding='utf-8') as f:
-                  f.write(s)
-          
-          changed = []
-          
-          # 1) struct task_struct 体内必须有 susfs_task_state 字段，并清掉结构体外多余的孤立声明
-          src = read(sched)
-          m = re.search(r'struct\s+task_struct\s*\{', src)
-          if not m:
-              print('::error::sched.h 未找到 struct task_struct 定义，无法定位字段注入点')
-              sys.exit(1)
-          i0 = m.end(); d = 1; p = i0
-          while p < len(src) and d > 0:
-              if src[p] == '{': d += 1
-              elif src[p] == '}': d -= 1
-              p += 1
-          close0 = p - 1
-          # 删除 struct 体之外、形如成员声明的孤立 susfs_task_state 定义行（避免多 TU 重复定义）
-          decl = re.compile(r'^\s*(?:unsigned\s+)?(?:int|long|u32|__u32|uint32_t|__s32|int32_t)\b.*\bsusfs_task_state\b[^;]*;\s*$')
-          out_lines = []
-          removed = False
-          for seg in re.finditer(r'.*\n?', src):
-              ln = seg.group(0)
-              in_body = i0 <= seg.start() < close0
-              if not in_body and decl.match(ln):
-                  removed = True
-                  continue
-              out_lines.append(ln)
-          if removed:
-              src = ''.join(out_lines)
-              changed.append('sched.h: 删除 struct task_struct 之外的孤立 susfs_task_state 声明')
-          # 重新定位 body，确认字段在体内
-          m = re.search(r'struct\s+task_struct\s*\{', src)
-          i1 = m.end(); d = 1; p = i1
-          while p < len(src) and d > 0:
-              if src[p] == '{': d += 1
-              elif src[p] == '}': d -= 1
-              p += 1
-          body = src[i1:p - 1]
-          if 'susfs_task_state' not in body:
-              src = src[:i1] + '\n\tunsigned int susfs_task_state;\n' + src[i1:]
-              write(sched, src)
-              changed.append('sched.h: 在 struct task_struct 体内注入 susfs_task_state 字段')
-          else:
-              write(sched, src) if removed else None
-              print('sched.h: susfs_task_state 字段已在 struct task_struct 体内')
-          
-          
-          # 2) 定位状态宏；若补丁未自带其 #define，则向 include/linux/susfs_def.h 注入
-          #    （手动移植补丁常遗漏 INODE_STATE_* / TASK_STRUCT_* 宏，导致 stat.c
-          #    报 use of undeclared identifier。这里兜底补齐；已自带者不覆盖，零副作用。）
-          #    取值说明：
-          #      - INODE_STATE_* 作用在 inode->i_state（内核原生在用字段），必须落在
-          #        高位以避让原生 I_* 标志，此处采用 SUSFS 惯例的高位位值；
-          #      - TASK_STRUCT_* 作用在补丁新增的 task_struct->susfs_task_state 独立
-          #        字段上，不与任何原生位重叠，取低位即可（与补丁内 set/test 自洽）。
-          macros = {
-              'INODE_STATE_SUS_PATH': '0x40000000',
-              'INODE_STATE_SUS_KSTAT': '0x80000000',
-              'INODE_STATE_SUS_STATX': '0x20000000',
-              'TASK_STRUCT_NON_ROOT_USER_APP_PROC': '0x00000001',
-          }
-          need = ['TASK_STRUCT_NON_ROOT_USER_APP_PROC', 'INODE_STATE_SUS_KSTAT']
-          susfs_def = 'include/linux/susfs_def.h'
-          def macro_header(name):
-              pat = re.compile(r'#\s*define\s+' + name + r'\b')
-              for h in glob.glob('include/**/*.h', recursive=True):
-                  try:
-                      if pat.search(read(h)):
-                          return h
-                  except Exception:
-                      pass
-              return None
-          for name in need:
-              h = macro_header(name)
-              if h is not None:
-                  continue
-              if not os.path.exists(susfs_def):
-                  write(susfs_def, '#ifndef _LINUX_SUSFS_DEF_H\n#define _LINUX_SUSFS_DEF_H\n#endif\n')
-              d = read(susfs_def)
-              if re.search(r'#\s*define\s+' + name + r'\b', d):
-                  continue
-              ins = '#define ' + name + ' ' + macros[name] + '\n'
-              if '#endif' in d:
-                  d = d.replace('#endif', ins + '#endif', 1)
-              else:
-                  d = d + '\n' + ins
-              write(susfs_def, d)
-              changed.append('susfs_def.h: 注入缺失宏 ' + name + ' = ' + macros[name])
-          # 确保 stat.c 引入提供这些宏的头
-          def any_macro_header():
-              return macro_header('INODE_STATE_SUS_KSTAT') or macro_header('TASK_STRUCT_NON_ROOT_USER_APP_PROC')
-          stat_src = read(statc)
-          hh = any_macro_header()
-          if hh is None:
-              print('::error::仍无法为 SUSFS 宏定位头文件，请检查补丁')
-              sys.exit(1)
-          inc = '#include <' + hh[len('include/'):] + '>'
-          if inc not in stat_src:
-              mm = re.search(r'(?m)^#include ', stat_src)
-              if mm:
-                  stat_src = stat_src[:mm.start()] + inc + '\n' + stat_src[mm.start():]
-              else:
-                  stat_src = inc + '\n' + stat_src
-              write(statc, stat_src)
-              changed.append('stat.c: 追加 ' + inc + '（提供 SUSFS 宏）')
-          
-          if changed:
-              for c in changed:
-                  print('SUSFS_FIX:', c)
-          else:
-              print('SUSFS_FIX: 补丁内容完整，无需补强')
-          SUSFS_FIXPY
-
-          # 追加 SUSFS 内核配置（chopin_defconfig 末尾可能无换行，先补换行再追加）。
+          # ── 打上补丁后，写入集成 SUSFS 必要的内核配置 ──
+          # 补丁自带 defconfig 改动（已写入下面这套符号）；这里仅做幂等兜底：
+          # 若总开关 CONFIG_KSU_SUSFS 未出现在 defconfig 中（补丁的 defconfig hunk 未命中时），
+          # 再按补丁的符号集补齐，保证 SUSFS 功能开关就位；已存在则不重复写。
           DEFCONFIG="arch/${{ env.ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
           if [ -n "$(tail -c1 "$DEFCONFIG")" ]; then echo >> "$DEFCONFIG"; fi
 
           if grep -q '^CONFIG_KSU_SUSFS=y' "$DEFCONFIG"; then
             echo "CONFIG_KSU_SUSFS 已存在，跳过追加"
           else
-            printf '\n# ===== SUSFS =====\nCONFIG_KSU_SUSFS=y\n' >> "$DEFCONFIG"
+            printf '\n# ===== SUSFS =====\n' >> "$DEFCONFIG"
+            printf 'CONFIG_KSU_SUSFS=y\n' >> "$DEFCONFIG"
+            printf 'CONFIG_KSU_SUSFS_SUS_PATH=y\n' >> "$DEFCONFIG"
+            printf 'CONFIG_KSU_SUSFS_SUS_MOUNT=y\n' >> "$DEFCONFIG"
+            printf 'CONFIG_KSU_SUSFS_SUS_KSTAT=y\n' >> "$DEFCONFIG"
+            printf 'CONFIG_KSU_SUSFS_SPOOF_UNAME=y\n' >> "$DEFCONFIG"
+            printf 'CONFIG_KSU_SUSFS_ENABLE_LOG=y\n' >> "$DEFCONFIG"
           fi
 
           echo "当前 KSU/SUSFS 相关配置:"
