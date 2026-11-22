@@ -41,7 +41,7 @@ on:
         default: true
 
       susfs_enabled:
-        description: '是否集成 SUSFS（从 next-a16 分支拉取手动移植补丁 susfs_4.14_manual.patch）'
+        description: '是否集成 SUSFS（从 next-a16 分支拉取手动移植补丁 susfs_414.patch）'
         required: true
         type: boolean
         default: true
@@ -302,8 +302,11 @@ jobs:
 
           # 不再依赖触发分支：直接从 next-a16 分支的 raw 地址下载补丁，
           # 这样无论用哪个分支触发 workflow 都能拿到补丁（patch 只需提交在 next-a16 上）。
+          # 注意：必须用含 INODE_STATE_SUS_PATH / TASK_STRUCT_NON_ROOT_USER_APP_PROC
+          # 全套宏定义的完整版 susfs_414.patch（旧 susfs_4.14_full.patch 缺这些宏，
+          # 会导致 fs/namei.c 报 use of undeclared identifier）。
           SUSFS_PATCH="${{ github.workspace }}/patches/susfs_414.patch"
-          SUSFS_PATCH_URL="https://raw.githubusercontent.com/suyunhao15879378500-tech/kernel-builder-chopin/next-a16/patches/susfs_4.14_full.patch"
+          SUSFS_PATCH_URL="https://raw.githubusercontent.com/suyunhao15879378500-tech/kernel-builder-chopin/next-a16/patches/susfs_414.patch"
           mkdir -p "$(dirname "$SUSFS_PATCH")"
 
           echo "正在从 next-a16 分支下载 SUSFS 补丁..."
@@ -334,9 +337,15 @@ jobs:
             echo "SUSFS 补丁应用成功"
           fi
 
-          # ── 确定性补强：补丁打完后再硬性确保三处关键符号正确就位 ──
-          # 防止 susfs 手动补丁把 sched.h 字段加到 struct task_struct 之外、
-          # 或 stat.c 漏掉宏定义所在头，导致 stat.c 编译报 member/undeclared identifier。
+          # ── 确定性补强：补丁打完后再硬性确保关键符号正确就位 ──
+          # 防止 susfs 手动补丁漏掉 INODE_STATE_* / TASK_STRUCT_* 宏，导致
+          # namei.c / stat.c 报 use of undeclared identifier。这里兜底补齐；
+          # 已自带者不覆盖，零副作用。宏值与 include/linux/susfs_def.h 保持一致：
+          #   INODE_STATE_SUS_PATH       BIT(24) = 0x01000000
+          #   INODE_STATE_SUS_MOUNT      BIT(25) = 0x02000000
+          #   INODE_STATE_SUS_KSTAT      BIT(26) = 0x04000000
+          #   INODE_STATE_OPEN_REDIRECT  BIT(27) = 0x08000000
+          #   TASK_STRUCT_NON_ROOT_USER_APP_PROC  BIT(0) = 0x00000001
           python3 - <<'SUSFS_FIXPY'
           import re, glob, os, sys
           
@@ -399,18 +408,14 @@ jobs:
           # 2) 定位状态宏；若补丁未自带其 #define，则向 include/linux/susfs_def.h 注入
           #    （手动移植补丁常遗漏 INODE_STATE_* / TASK_STRUCT_* 宏，导致 stat.c
           #    报 use of undeclared identifier。这里兜底补齐；已自带者不覆盖，零副作用。）
-          #    取值说明：
-          #      - INODE_STATE_* 作用在 inode->i_state（内核原生在用字段），必须落在
-          #        高位以避让原生 I_* 标志，此处采用 SUSFS 惯例的高位位值；
-          #      - TASK_STRUCT_* 作用在补丁新增的 task_struct->susfs_task_state 独立
-          #        字段上，不与任何原生位重叠，取低位即可（与补丁内 set/test 自洽）。
           macros = {
-              'INODE_STATE_SUS_PATH': '0x40000000',
-              'INODE_STATE_SUS_KSTAT': '0x80000000',
-              'INODE_STATE_SUS_STATX': '0x20000000',
+              'INODE_STATE_SUS_PATH': '0x01000000',
+              'INODE_STATE_SUS_MOUNT': '0x02000000',
+              'INODE_STATE_SUS_KSTAT': '0x04000000',
+              'INODE_STATE_OPEN_REDIRECT': '0x08000000',
               'TASK_STRUCT_NON_ROOT_USER_APP_PROC': '0x00000001',
           }
-          need = ['TASK_STRUCT_NON_ROOT_USER_APP_PROC', 'INODE_STATE_SUS_KSTAT']
+          need = ['TASK_STRUCT_NON_ROOT_USER_APP_PROC', 'INODE_STATE_SUS_PATH', 'INODE_STATE_SUS_KSTAT']
           susfs_def = 'include/linux/susfs_def.h'
           def macro_header(name):
               pat = re.compile(r'#\s*define\s+' + name + r'\b')
